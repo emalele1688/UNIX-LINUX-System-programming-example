@@ -1,0 +1,51 @@
+Nei sistemi UNIX/LINUX ogni processo mantiene nel proprio process control block (task_struct in Linux) degli identificatori noti come "Process Credentials". Essi permettono di sapere quale utente e gruppo di appartenenza 
+ha lanciato il processo, al fine di assegnare i giusti privileggi ad ogni operazione compiuta dal programma.
+I processi hanno quattro gruppi di identificatori:
+  
+  - Real (UNIX (and linux)): 
+    -- uid (user id) che indica l'utente che ha lanciato il programma. Impostato al login dal programma login
+    -- gid (group id) che indica il gruppo principale di appartenenza di tale utente. Impostato al login dal programma login
+  
+  - Effective (UNIX (and linux)):
+    -- euid (user id effettivo) Indica l'utente usato nel controllo di accesso ai file. 
+    -- egid (group id effettivo) Indica il gruppo usato nel controllo di accesso ai file.
+      Al momento del lancio del processo essi sono identici al gruppo real tranne nel caso in cui l'eseguibile ha i bit suid e sgid impostati. In tal caso essi sono impostati all'utente ed al gruppo proprietario del file.
+  
+  - Saved (LINUX): suid e sgid bit nel proccess table da non confondere con quelli presenti nell'inode (primi due bit dei 12 bit umask). Sono impostati dalla funzione exec al valore di euid e egid, ed restano tali per tutta l'esecuzione
+	del processo. Servono per tener traccia di quale fossero utente e gruppo al momento del lancio del processo.
+  
+  - Filesystem (LINUX) :
+    -- fsuid Indica l'utente effettivo per l'accesso al file system
+    -- fsgid Indica il gruppo effettivo per l'accesso al file system
+
+    
+Syscall setuid(uid_t uid): (in modo analogo funziona setgid(gid_t gid)); Permette ad un programma con il bit suid (o sgid) impostato di portare lo user-ID (o group-ID) identico a quello effettivo.
+ESEMPIO:
+  Il programma test proprietario di emanuele(uid=1000) e appartenente al gruppo emanuele(uid=1000), con lo suid a 0, stamperà il seguente durante l'esecuzione:
+  $./test
+    User ID reale 1000
+    Group ID reale 1000
+    User ID effettivo 1000
+    Group ID effettivo 1000
+    Impossibile eseguire setuid(0)
+
+  se ora eseguo:
+  $sudo chown root:root ./test => Il programma è proprietario di root ed appartiene a root
+  $sudo chmod 4755 ./test => Imposto suid-rwx-rx-rx (il sgid è nullo ma non ci interessa). Quindi il programma proprietario di root è eseguibile anche da emanuele, ed ha il bit suid attivo, quindi posso cambiare l'ID-reale
+  $./test
+    User ID reale 1000 	=> user-ID reale (emanuele lancia il programma
+    Group ID reale 1000
+    User ID effettivo 0	=> suid abilitato cambia lo user-ID effettivo
+    Group ID effettivo 1000
+    eseguo setuid(0)
+    User ID reale 0	=> user-ID reale è diventato uguale allo user-ID effettivo (operazione permessa dal bit suid)
+    Group ID reale 1000
+    User ID effettivo 0
+    Group ID effettivo 1000
+
+Dunque otteniamo i privileggi di root lanciando il programma come utente normale!!!
+
+Comandi per conoscere i permessi su un file:
+  $stat nome_file
+  $ls -l
+  

@@ -1,0 +1,1 @@
+Questo file sarà mappato in memoria

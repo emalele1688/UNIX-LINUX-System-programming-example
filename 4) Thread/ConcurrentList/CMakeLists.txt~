@@ -1,0 +1,4 @@
+project(concurrentlist)
+
+add_executable(concurrentlist main.cpp)
+

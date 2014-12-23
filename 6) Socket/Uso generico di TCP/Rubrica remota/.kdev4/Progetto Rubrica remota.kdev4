@@ -1,0 +1,15 @@
+[Buildset]
+BuildItems=@Variant(\x00\x00\x00\t\x00\x00\x00\x00\x01\x00\x00\x00\x0b\x00\x00\x00\x00\x01\x00\x00\x00.\x00P\x00r\x00o\x00g\x00e\x00t\x00t\x00o\x00 \x00R\x00u\x00b\x00r\x00i\x00c\x00a\x00 \x00r\x00e\x00m\x00o\x00t\x00a)
+
+[CMake]
+BuildDirs[$e]=/media/Documenti/Documenti/Personale/Programmazione/Progetti/Progetto Rubrica remota/build,/media/Documenti/Documenti/Personale/Programmazione/Progetti/Progetto Rubrica remota/bin
+CMakeDir=/usr/share/cmake-2.8/Modules
+Current CMake Binary=file:///usr/bin/cmake
+CurrentBuildDir=file:///media/Documenti/Documenti/Personale/Programmazione/Progetti/Progetto%20Rubrica%20remota/bin
+CurrentBuildType=Debug
+CurrentInstallDir=
+Extra Arguments=
+ProjectRootRelative=./
+
+[MakeBuilder]
+Number Of Jobs=1

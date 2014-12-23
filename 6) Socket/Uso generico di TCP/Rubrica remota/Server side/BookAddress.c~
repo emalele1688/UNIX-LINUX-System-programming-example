@@ -1,0 +1,450 @@
+#include <stdio.h> 
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#include <string.h>
+#include <errno.h>
+#include <signal.h>
+
+#include "Streamer.h"
+#include "BookAddress.h"
+
+#define BUCKET_SIZE 		sizeof(AddressBook_Bucket) * 1024
+#define COLLIDE_START_SIZE	sizeof(AddressBook_collideBucket) * 512
+#define HASH_COMPRESS		1024
+#define HASH_SCALE_FACT		2
+#define HEADER_SIZE 		sizeof(AddressBook_FileHeader)
+#define COLLIDE_RESIZE_FACT	2
+
+
+typedef struct _AddressBook
+{
+  AddressBook_Bucket* bucket;
+  AddressBook_collideBucket* collideBucket;
+  int ds_book;
+  unsigned int entryCount;
+  unsigned int collideBucketCount;
+  unsigned int collideBucketSize;
+} AddressBook;
+
+typedef struct _AddressBook_Bucket
+{
+  AddressBook_collideBucket* next;
+  unsigned int position;
+  unsigned int counter;
+} AddressBook_Bucket;
+
+typedef struct _AddressBook_collideBucket
+{
+  AddressBook_collideBucket* next;
+  unsigned int position;
+} AddressBook_collideBucket;
+
+typedef struct _AddressBook_FileHeader
+{
+  unsigned int entryCount;
+  unsigned int collideBucketSize;
+} AddressBook_FileHeader;
+
+
+void Book_loadBucket(AddressBook* book);
+int Book_hashing(const char* name, const char* surname);
+int Book_computeHashCode(const char* str, int length);
+int Book_pushEntry(AddressBook* book, const Entry* ent);
+void Book_createIndex(AddressBook* book, const Entry* ent);
+int Book_resizeCollideBucket(AddressBook* book);
+int Book_setHeader(AddressBook* book);
+
+
+static int FLAG_TERM;
+
+void Book_term(int sig)
+{
+  FLAG_TERM = 1;
+}
+
+
+AddressBook* Book_newBook(char* name)
+{
+  struct sigaction exitAction;
+  struct sigaction oldIntAction;
+  struct sigaction oldQuitAction;
+  struct sigaction oldTermAction;
+  FLAG_TERM = 0;
+  
+  //Installo un gestore per i segnali di terminazione validi per questa routine
+  sigemptyset(&exitAction.sa_mask);
+  sigaddset(&exitAction.sa_mask, SIGINT);
+  sigaddset(&exitAction.sa_mask, SIGQUIT);
+  sigaddset(&exitAction.sa_mask, SIGTERM);
+  exitAction.sa_flags = 0;
+  exitAction.sa_handler = Book_term;
+  if(sigaction(SIGINT, &exitAction, &oldIntAction) == -1 || sigaction(SIGQUIT, &exitAction, &oldQuitAction) == -1 || sigaction(SIGTERM, &exitAction, &oldTermAction) == -1)
+    fprintf(stderr, "Problemi nell'installare un gestore per i tre segnali di uscita: %s\n", strerror(errno));
+  
+  AddressBook* book = malloc(sizeof(AddressBook));
+  if(book == 0)
+  {
+    printf("Non c'è sufficente memoria per inizializzare l'AddressBook.\n");
+    return (AddressBook*)0;
+  }
+  memset(book, 0, sizeof(AddressBook));
+  
+  book->bucket = malloc(BUCKET_SIZE);
+  book->collideBucket = malloc(COLLIDE_START_SIZE);
+  
+  if(book->bucket == 0 || book->collideBucket == 0)
+  {
+    printf("Non c'è sufficente memoria per l'allocazione della ricerca indicizzata.\n");
+    free(book);
+    return (AddressBook*)0;
+  }
+  
+  memset(book->bucket, 0, BUCKET_SIZE);
+  memset(book->collideBucket, 0, COLLIDE_START_SIZE);
+  book->collideBucketSize = COLLIDE_START_SIZE;
+  
+  book->ds_book = open(name, O_CREAT | O_RDWR | O_EXCL, 0660);
+  if(book->ds_book == -1)
+  {
+    printf("Impossile creare un file di nome %s: %s\n", name, strerror(errno));
+    free(book->bucket);
+    free(book->collideBucket);
+    free(book);
+    return (AddressBook*)0;
+  }
+  
+  if(Book_setHeader(book) == 0)
+  {
+    printf("Problemi in scrittura dell'header: %s\n", strerror(errno));
+    close(book->ds_book);
+    free(book->bucket);
+    free(book->collideBucket);
+    free(book);
+    return (AddressBook*)0;
+  }
+  
+  exitAction.sa_handler = SIG_DFL;
+  if(sigaction(SIGINT, &exitAction, NULL) == -1 || sigaction(SIGQUIT, &exitAction, NULL) == -1 || sigaction(SIGTERM, &exitAction, NULL) == -1)
+    fprintf(stderr, "Problemi nell'installare un gestore per i tre segnali di uscita: %s\n", strerror(errno));
+  
+  if(FLAG_TERM == 1)
+  {
+    close(book->ds_book);
+    free(book->bucket);
+    free(book->collideBucket);
+    free(book);
+    return (AddressBook*)0;
+  }
+  
+  return book;
+}
+
+AddressBook* Book_loadBook(char* name)
+{
+  AddressBook_FileHeader hd;
+  struct sigaction exitAction;
+  struct sigaction oldIntAction;
+  struct sigaction oldQuitAction;
+  struct sigaction oldTermAction;
+  
+  FLAG_TERM = 0;
+  
+  //Installo un gestore per i segnali di terminazione validi per questa routine
+  sigemptyset(&exitAction.sa_mask);
+  sigaddset(&exitAction.sa_mask, SIGINT);
+  sigaddset(&exitAction.sa_mask, SIGQUIT);
+  sigaddset(&exitAction.sa_mask, SIGTERM);
+  exitAction.sa_flags = 0;
+  exitAction.sa_handler = Book_term;
+  if(sigaction(SIGINT, &exitAction, &oldIntAction) == -1 || sigaction(SIGQUIT, &exitAction, &oldQuitAction) == -1 || sigaction(SIGTERM, &exitAction, &oldTermAction) == -1)
+    fprintf(stderr, "Problemi nell'installare un gestore per i tre segnali di uscita: %s\n", strerror(errno));
+  
+  AddressBook* book = malloc(sizeof(AddressBook));
+  if(book == 0)
+  {
+    printf("Non c'è sufficente memoria per inizializzare l'AddressBook.\n");
+    return (AddressBook*)0;
+  }
+  memset(book, 0, sizeof(AddressBook));
+  
+  //Lo aprò prima in sola lettura partendo dall'inizio del file per il caricamento del bucket
+  book->ds_book = open(name, O_RDWR);
+  if(book->ds_book == -1)
+  {
+    printf("Impossibile aprire il file %s: %s\n", name, strerror(errno));
+    free(book);
+    return (AddressBook*)0;
+  }
+  
+  //Leggo l'header del file
+  if( readToStream(book->ds_book, &hd, sizeof(AddressBook_FileHeader)) < sizeof(AddressBook_FileHeader))
+  {
+    printf("Problemi nella lettura dell'header del file %s: %s\n", name, strerror(errno));
+    close(book->ds_book);
+    free(book);
+    return (AddressBook*)0;
+  }
+  
+  book->entryCount = hd.entryCount;
+  book->collideBucketSize = hd.collideBucketSize;
+  
+  book->bucket = malloc(BUCKET_SIZE);
+  book->collideBucket = malloc(book->collideBucketSize);
+  
+  if(book->bucket == 0 || book->collideBucket == 0)
+  {
+    printf("Non c'è sufficente memoria per l'allocazione della ricerca indicizzata.\n");
+    close(book->ds_book);
+    free(book->bucket);
+    free(book->collideBucket);
+    free(book);
+    return (AddressBook*)0;
+  }
+  
+  memset(book->bucket, 0, BUCKET_SIZE);
+  memset(book->collideBucket, 0, book->collideBucketSize);
+  
+  if(FLAG_TERM == 1)
+  {
+    close(book->ds_book);
+    free(book->bucket);
+    free(book->collideBucket);
+    free(book);
+    return (AddressBook*)0;
+  }
+  
+  //Carico il bucket leggendo tutte le entry del file. Dopo questa operazione il ds_book è posizionato alla fine del file.
+  Book_loadBucket(book);
+  
+  exitAction.sa_handler = SIG_DFL;
+  if(sigaction(SIGINT, &exitAction, NULL) == -1 || sigaction(SIGQUIT, &exitAction, NULL) == -1 || sigaction(SIGTERM, &exitAction, NULL) == -1)
+    fprintf(stderr, "Problemi nell'installare un gestore per i tre segnali di uscita: %s\n", strerror(errno));
+  
+  if(FLAG_TERM == 1)
+  {
+    close(book->ds_book);
+    free(book->bucket);
+    free(book->collideBucket);
+    free(book);
+    return (AddressBook*)0;
+  }
+  
+  return book;
+}
+
+void Book_loadBucket(AddressBook* book)
+{
+  Entry ent;
+  unsigned int i, hash, seek;
+  
+  for(i = 0; i < book->entryCount; i++)
+  {
+    if( readToStream(book->ds_book, &ent, sizeof(Entry)) < sizeof(Entry))
+    {
+      printf("Impossibile indicizzare l'entry numero %i nel file per la ricerca: %s\n", i, strerror(errno));
+      continue;
+    }
+    
+    hash = Book_hashing(ent.name, ent.surname);
+    seek = i * sizeof(Entry) + HEADER_SIZE;
+    
+    if(book->bucket[hash].counter == 0)
+      book->bucket[hash].position = seek;
+    else
+    {
+      book->collideBucket[book->collideBucketCount].position = seek;
+      book->collideBucket[book->collideBucketCount].next = 0;
+      
+      AddressBook_collideBucket* curr = (AddressBook_collideBucket*)&(book->bucket[hash]);
+      while(curr->next != 0)
+	curr = curr->next;
+      curr->next = &(book->collideBucket[book->collideBucketCount]);
+      book->collideBucketCount++;
+    }
+    
+    book->bucket[hash].counter++;
+    
+  }
+}
+
+int Book_insert(AddressBook* book, const Entry* ent)
+{
+  if( Book_pushEntry(book, ent) == 1)
+  {
+    printf("Entry non inserita\n");
+    return 1;
+  }
+  
+  Book_createIndex(book, ent);
+  
+  book->entryCount++;
+  
+  return 0;
+}
+
+int Book_pushEntry(AddressBook* book, const Entry* ent)
+{  
+  if( writeToStream(book->ds_book, ent, sizeof(Entry)) == 0)
+  {
+    printf("%s\n", strerror(errno));
+    return 1;
+  }
+  
+  return 0;
+}
+
+void Book_createIndex(AddressBook* book, const Entry* ent)
+{
+  unsigned int hash, seek;
+  
+  hash = Book_hashing(ent->name, ent->surname);
+  //Trovo la posizione dell'entry nel file
+  seek = book->entryCount * sizeof(Entry) + HEADER_SIZE;
+  
+  if(book->bucket[hash].counter == 0)
+    book->bucket[hash].position = seek;
+  else
+  {
+    if(book->collideBucketCount == book->collideBucketSize)
+    {
+      if( Book_resizeCollideBucket(book) == 1)
+      {
+	printf("Impossibile indicizzare l'entry %s %s per la ricerca\n", ent->name, ent->surname);
+	return;
+      }
+    }
+
+    //Indicizza l'entry in coda al collideBucket
+    book->collideBucket[book->collideBucketCount].position = seek;
+    book->collideBucket[book->collideBucketCount].next = 0;
+    
+    AddressBook_collideBucket* curr = (AddressBook_collideBucket*)&(book->bucket[hash]);
+    while(curr->next != 0)
+      curr = curr->next;
+    curr->next = &(book->collideBucket[book->collideBucketCount]);
+    book->collideBucketCount++;
+  }
+  
+  book->bucket[hash].counter++;
+}
+
+int Book_resizeCollideBucket(AddressBook* book)
+{
+  if( realloc(book->collideBucket, book->collideBucketSize * COLLIDE_RESIZE_FACT) == 0)
+  {
+    printf("Attenzione, allocazione di un nuovo blocco collideBucket. Ciò potrebbe causare inifficenza nell'uso della memoria da parte del programma\n");
+    AddressBook_collideBucket* newCollideBucket = malloc(book->collideBucketSize * COLLIDE_RESIZE_FACT);
+    if(newCollideBucket == 0)
+    {
+      printf("Memoria non sufficente\n");
+      return 1;
+    }
+    
+    int i;
+    for(i = 0; i < book->collideBucketSize; i++)
+      memcpy(&(newCollideBucket[i]), &(book->collideBucket[i]), sizeof(AddressBook_collideBucket));
+    
+    free(book->collideBucket);
+    
+    book->collideBucket = newCollideBucket;
+  }
+  
+  book->collideBucketSize *= COLLIDE_RESIZE_FACT;
+  
+  return 0;
+}
+
+int Book_select(AddressBook* book, const char* name, const char* surname, AddressBook_EntryIterator* iter)
+{
+  int hash;  
+  hash = Book_hashing(name, surname);
+
+  if(book->bucket[hash].counter == 0)
+    return 0;
+  
+  iter->current = &(book->bucket[hash]);
+  return book->bucket[hash].counter;
+}
+
+int Book_selectNext(AddressBook* book, AddressBook_EntryIterator* iter, Entry* ent)
+{
+  if(iter->current == (AddressBook_Bucket*)0)
+   return 1; 
+  //pos punta l'indice nel bucket
+  AddressBook_Bucket* pos = iter->current;
+  //current ora punta l'indice successivo nel bucket
+  iter->current = (AddressBook_Bucket*)pos->next;
+  
+  //Mi posiziono sulla entry
+  lseek(book->ds_book, pos->position, SEEK_SET);
+  
+  //Carico la entry
+  if( readToStream(book->ds_book, ent, sizeof(Entry)) < sizeof(Entry))
+  {
+    printf("Problemi nella lettura dell'entry: %s\n", strerror(errno));
+    return 1;
+  }
+  
+  //Torno alla fine del file
+  lseek(book->ds_book, 0, SEEK_END);
+  
+  return 0;
+}
+
+int Book_hashing(const char* name, const char* surname)
+{
+  unsigned int hash;
+  char strcct[FIELD_1*2];
+ 
+  unsigned int sn = strlen(name);
+  unsigned int ss = strlen(surname);
+  
+  strncpy(strcct, name, sn+1);
+  strncat(strcct, surname, ss+1);
+  
+  //Calcolo l'hash
+  hash = Book_computeHashCode(strcct, sn+ss);
+  //Transformo l'hash nell'indice del Bucket di indicizzazione
+  hash = hash % HASH_COMPRESS;
+  
+  return hash;
+}
+
+int Book_computeHashCode(const char* str, int length)
+{
+  int i;
+  int hash = (int)str[0];
+  for(i = 1; i < length; i++)
+    hash += ((int)str[i]) * (HASH_SCALE_FACT ^ i);
+  
+  return hash;
+}
+
+int Book_setHeader(AddressBook* book)
+{
+  AddressBook_FileHeader hd;
+  hd.entryCount = book->entryCount;
+  hd.collideBucketSize = book->collideBucketSize;
+  lseek(book->ds_book, 0, SEEK_SET);
+  
+  if( writeToStream(book->ds_book, &hd, HEADER_SIZE) == 0)
+    return 0;
+  else
+    return 1;
+}
+
+void Book_close(AddressBook* book)
+{
+  if(book == 0)
+    return;
+  
+  //Aggiorno l'header del file
+  Book_setHeader(book);
+  close(book->ds_book);
+  free(book->bucket);
+  free(book->collideBucket);
+  free(book);
+}

@@ -1,0 +1,44 @@
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <dirent.h>
+
+int main(int arg, char* args[])
+{
+  DIR* dp;
+  struct dirent *ep;
+  
+  //opendir apre una directory -- Restituisce il puntatore alla struttura DIR allocata dinamicamente
+  if(arg == 1)
+    dp = opendir("./");
+  else
+    dp = opendir(args[1]);
+  
+  if(dp == NULL)
+  {
+    printf("Impossibile aprire la directory corrente\n");
+    exit(1);
+  }
+
+  /*Finchè dp != 0, ovvero esiste qualcosa da leggere nella directory
+   * readdir legge nella directory dp
+   */
+  printf("numero inode\t\tnome\t\ttipo file\t\tlenght\t\toffset prossimo file\n");
+  while( (ep = readdir(dp)) != 0)
+  {
+    printf("%d\t\t", ep->d_ino);
+    printf("%s\t\t", ep->d_name);
+    printf("%d\t\t", ep->d_type);
+    printf("%d\t\t", ep->d_reclen);
+    printf("%u\n", ep->d_off);
+  }
+  
+  //Resetta la posizione della directory dp all'inizio NON SERVE QUI
+  rewinddir(dp);
+   
+  if(closedir(dp) == -1)
+    printf("Problemi nel chiudere il puntatore a directory\n");
+  
+  return 0;
+}
